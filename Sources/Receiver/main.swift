@@ -231,13 +231,15 @@ class DisplayClient {
     private var framed: FramedConnection?
     private var formatDesc: CMVideoFormatDescription?
     private var frameCount: Int64 = 0
+    private var minLatencyMs: Int64 = Int64.max
+    private var lastLatencyResetTime: Double = 0
 
     init(layer: AVSampleBufferDisplayLayer) {
         self.layer = layer
     }
 
     func start() {
-        let params = NWParameters.tcp
+        let params = makeLowLatencyTCPParameters()
         browser = NWBrowser(for: .bonjourWithTXTRecord(type: kServiceType, domain: kServiceDomain), using: params)
         browser?.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self = self, self.framed == nil else { return }
@@ -268,7 +270,7 @@ class DisplayClient {
         guard framed == nil else { return }
         print("Connecting to \(endpoint)")
         fflush(stdout)
-        let conn = NWConnection(to: endpoint, using: .tcp)
+        let conn = NWConnection(to: endpoint, using: makeLowLatencyTCPParameters())
         framed = FramedConnection(conn)
         conn.stateUpdateHandler = { [weak self] state in
             switch state {
@@ -371,11 +373,41 @@ class DisplayClient {
 
     private func handleVideo(_ payload: Data) {
         guard let fmt = formatDesc else { return }
-        let count = payload.count
-        guard count > 0 else { return }
+        guard payload.count > 8 else { return }
 
+        let start = payload.startIndex
+        let b0 = UInt64(payload[start])
+        let b1 = UInt64(payload[start + 1])
+        let b2 = UInt64(payload[start + 2])
+        let b3 = UInt64(payload[start + 3])
+        let b4 = UInt64(payload[start + 4])
+        let b5 = UInt64(payload[start + 5])
+        let b6 = UInt64(payload[start + 6])
+        let b7 = UInt64(payload[start + 7])
+        let sentTimeMs = Int64(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56))
+
+        let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let rawDelta = nowMs - sentTimeMs
+
+        // Dynamic baseline latency calibration
+        let nowSec = Date().timeIntervalSinceReferenceDate
+        if minLatencyMs == Int64.max || rawDelta < minLatencyMs || (nowSec - lastLatencyResetTime > 10.0) {
+            minLatencyMs = rawDelta
+            lastLatencyResetTime = nowSec
+        }
+
+        let queueLag = rawDelta - minLatencyMs
+        // If queue backlog exceeds 120ms (e.g. Wi-Fi momentary stutter), flush displayLayer to instantly catch up
+        if queueLag > 120 {
+            DispatchQueue.main.async { [weak self] in
+                self?.layer.flush()
+            }
+            minLatencyMs = rawDelta
+        }
+
+        let count = payload.count - 8
         let mem = malloc(count)!
-        payload.copyBytes(to: mem.assumingMemoryBound(to: UInt8.self), count: count)
+        payload.copyBytes(to: mem.assumingMemoryBound(to: UInt8.self), from: (start + 8) ..< (start + 8 + count))
 
         var blockBuf: CMBlockBuffer?
         let status = CMBlockBufferCreateWithMemoryBlock(

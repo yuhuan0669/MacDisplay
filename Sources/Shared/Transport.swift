@@ -11,6 +11,20 @@ public let MSG_PING:   UInt8 = 0xFF
 public let kServiceType = "_macdisplay._tcp"
 public let kServiceDomain = "local."
 
+// MARK: - TCP Network Parameters
+public func makeLowLatencyTCPParameters() -> NWParameters {
+    let tcpOptions = NWProtocolTCP.Options()
+    tcpOptions.noDelay = true                // Disable Nagle algorithm for immediate packet dispatch
+    tcpOptions.enableKeepalive = true
+    tcpOptions.keepaliveIdle = 2             // 2 seconds
+    tcpOptions.keepaliveInterval = 1         // 1 second
+
+    let params = NWParameters(tls: nil, tcp: tcpOptions)
+    params.allowFastOpen = true
+    params.serviceClass = .responsiveData    // Low-latency priority traffic
+    return params
+}
+
 // MARK: - Config Payload
 public struct DisplayConfig {
     public let width: UInt32
@@ -46,17 +60,27 @@ public final class FramedConnection {
     private var buf = Data()
     private let lock = NSLock()
 
+    // Backpressure tracker: indicates whether a previous video packet is still in flight
+    public var isBusySending = false
+
     public init(_ connection: NWConnection) {
         self.connection = connection
     }
 
-    public func send(type: UInt8, payload: Data) {
+    public func send(type: UInt8, payload: Data, completion: ((NWError?) -> Void)? = nil) {
         var msg = Data(capacity: 5 + payload.count)
         var len = UInt32(payload.count).littleEndian
         withUnsafeBytes(of: &len) { msg.append(contentsOf: $0) }
         msg.append(type)
         msg.append(payload)
-        connection.send(content: msg, completion: .idempotent)
+
+        if let onComplete = completion {
+            connection.send(content: msg, completion: .contentProcessed { error in
+                onComplete(error)
+            })
+        } else {
+            connection.send(content: msg, completion: .idempotent)
+        }
     }
 
     public func startReceiving(handler: @escaping (UInt8, Data) -> Void) {

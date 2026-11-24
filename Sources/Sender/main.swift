@@ -156,7 +156,7 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             clientsLock.unlock()
 
             if self.isStreaming {
-                self.statusLabel.stringValue = "● 正在投屏 (50 Mbps / 30fps)"
+                self.statusLabel.stringValue = "● 正在投屏 (35 Mbps / 30fps)"
                 self.statusLabel.textColor = .systemGreen
                 self.toggleButton.title = "暂停投屏"
                 if let item = self.statusItem.menu?.item(withTag: 100) {
@@ -202,7 +202,7 @@ app.run()
 
 // MARK: - Bonjour Server
 func startServer() {
-    guard let listener = try? NWListener(using: .tcp, on: 7892) else {
+    guard let listener = try? NWListener(using: makeLowLatencyTCPParameters(), on: 7892) else {
         print("Failed to create listener"); return
     }
     listener.service = NWListener.Service(type: kServiceType)
@@ -309,7 +309,7 @@ func stopCapture() {
 // MARK: - Encoder Setup
 func setupEncoder(width: Int, height: Int) {
     var session: VTCompressionSession?
-    let bitrate = 50_000_000
+    let bitrate = 35_000_000
 
     let cb: VTCompressionOutputCallback = { _, _, status, _, sampleBuffer in
         guard status == noErr, let sb = sampleBuffer else { return }
@@ -372,7 +372,9 @@ func broadcastFrame(sampleBuffer: CMSampleBuffer) {
     let totalLen = CMBlockBufferGetDataLength(blockBuf)
     guard totalLen > 0 else { return }
 
-    if (isKeyframe(sampleBuffer) || lastFormatData == nil), let fmt = CMSampleBufferGetFormatDescription(sampleBuffer) {
+    let keyframe = isKeyframe(sampleBuffer)
+
+    if (keyframe || lastFormatData == nil), let fmt = CMSampleBufferGetFormatDescription(sampleBuffer) {
         if let psData = extractParameterSets(fmt) {
             lastFormatData = psData
             clientsLock.lock()
@@ -387,10 +389,35 @@ func broadcastFrame(sampleBuffer: CMSampleBuffer) {
         CMBlockBufferCopyDataBytes(blockBuf, atOffset: 0, dataLength: totalLen, destination: ptr.baseAddress!)
     }
 
+    // Embed 8-byte millisecond timestamp at the beginning of payload
+    var videoPayload = Data(capacity: 8 + totalLen)
+    var nowMs = UInt64(Date().timeIntervalSince1970 * 1000).littleEndian
+    withUnsafeBytes(of: &nowMs) { videoPayload.append(contentsOf: $0) }
+    videoPayload.append(frameData)
+
     clientsLock.lock()
     let snapshot = clients
     clientsLock.unlock()
-    snapshot.forEach { $0.send(type: MSG_VIDEO, payload: frameData) }
+
+    for client in snapshot {
+        if keyframe {
+            client.isBusySending = true
+            client.send(type: MSG_VIDEO, payload: videoPayload) { _ in
+                client.isBusySending = false
+            }
+        } else {
+            if client.isBusySending {
+                // Backpressure: network queue is still transmitting previous frame.
+                // Drop this P-frame to prevent bufferbloat / latency buildup!
+                needKeyframe = true
+                continue
+            }
+            client.isBusySending = true
+            client.send(type: MSG_VIDEO, payload: videoPayload) { _ in
+                client.isBusySending = false
+            }
+        }
+    }
 }
 
 func isKeyframe(_ sb: CMSampleBuffer) -> Bool {
