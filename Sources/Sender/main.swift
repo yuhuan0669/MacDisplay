@@ -65,14 +65,14 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
         cv.autoresizingMask = [.width, .height]
 
         // Status badge
-        statusLabel = NSTextField(labelWithString: "● 正在投屏 (HEVC 视网膜极清 / 30fps)")
+        statusLabel = NSTextField(labelWithString: "● 正在投屏 (HEVC 黄金平衡 / 20Mbps)")
         statusLabel.textColor = .systemGreen
         statusLabel.font = .systemFont(ofSize: 15, weight: .bold)
         statusLabel.frame = NSRect(x: 20, y: 155, width: 320, height: 24)
         cv.addSubview(statusLabel)
 
         // Details
-        let infoLabel = NSTextField(labelWithString: "分辨率: Retina 原生 (3024×1964)\n编解码: HEVC (H.265 硬件加速 30Mbps)")
+        let infoLabel = NSTextField(labelWithString: "分辨率: Retina 原生 (3024×1964)\n编解码: HEVC (H.265 硬件加速 20Mbps)")
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = .systemFont(ofSize: 12)
         infoLabel.frame = NSRect(x: 20, y: 110, width: 320, height: 38)
@@ -156,7 +156,7 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             clientsLock.unlock()
 
             if self.isStreaming {
-                self.statusLabel.stringValue = "● 正在投屏 (HEVC 视网膜极清 / 30fps)"
+                self.statusLabel.stringValue = "● 正在投屏 (HEVC 黄金平衡 / 20Mbps)"
                 self.statusLabel.textColor = .systemGreen
                 self.toggleButton.title = "暂停投屏"
                 if let item = self.statusItem.menu?.item(withTag: 100) {
@@ -309,7 +309,7 @@ func stopCapture() {
 // MARK: - Encoder Setup
 func setupEncoder(width: Int, height: Int) {
     var session: VTCompressionSession?
-    let bitrate = 30_000_000 // 30 Mbps HEVC provides pristine visual fidelity (exceeds 50 Mbps H.264)
+    let bitrate = 20_000_000 // 20 Mbps HEVC: sweet spot for low latency, low Wi-Fi pressure, and crisp Retina text
 
     let cb: VTCompressionOutputCallback = { _, _, status, _, sampleBuffer in
         guard status == noErr, let sb = sampleBuffer else { return }
