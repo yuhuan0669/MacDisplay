@@ -234,15 +234,27 @@ class DisplayClient {
     private var minLatencyMs: Int64 = Int64.max
     private var lastLatencyResetTime: Double = 0
 
+    private var isConnected = false
+
     init(layer: AVSampleBufferDisplayLayer) {
         self.layer = layer
     }
 
     func start() {
+        guard !isConnected && framed == nil else { return }
+
+        // 1. Direct connection to MacBook IP (instant <1ms on LAN)
+        let targetHost = "10.140.2.206"
+        let targetPort: UInt16 = 7892
+        print("Connecting directly to \(targetHost):\(targetPort)...")
+        fflush(stdout)
+        connect(to: NWEndpoint.hostPort(host: NWEndpoint.Host(targetHost), port: NWEndpoint.Port(rawValue: targetPort)!))
+
+        // 2. Start Bonjour browsing as fallback/discovery
         let params = makeLowLatencyTCPParameters()
         browser = NWBrowser(for: .bonjourWithTXTRecord(type: kServiceType, domain: kServiceDomain), using: params)
         browser?.browseResultsChangedHandler = { [weak self] results, _ in
-            guard let self = self, self.framed == nil else { return }
+            guard let self = self, !self.isConnected, self.framed == nil else { return }
             if let result = results.first {
                 print("Discovered Bonjour service: \(result.endpoint)")
                 fflush(stdout)
@@ -254,28 +266,32 @@ class DisplayClient {
             fflush(stdout)
         }
         browser?.start(queue: .global())
-        print("Browsing for \(kServiceType)…")
-        fflush(stdout)
-
-        // Fallback: direct connection if Bonjour takes > 1.0s
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self = self, self.framed == nil else { return }
-            print("Direct fallback: connecting to 10.140.2.206:7892...")
-            fflush(stdout)
-            self.connect(to: NWEndpoint.hostPort(host: "10.140.2.206", port: 7892))
-        }
     }
 
     private func connect(to endpoint: NWEndpoint) {
-        guard framed == nil else { return }
-        print("Connecting to \(endpoint)")
+        guard !isConnected, framed == nil else { return }
+        print("Initiating connection to \(endpoint)...")
         fflush(stdout)
         let conn = NWConnection(to: endpoint, using: makeLowLatencyTCPParameters())
-        framed = FramedConnection(conn)
+        let fc = FramedConnection(conn)
+        framed = fc
+
+        let timeoutWork = DispatchWorkItem { [weak self, weak conn] in
+            guard let self = self, !self.isConnected else { return }
+            print("Connection to \(endpoint) timed out, resetting...")
+            fflush(stdout)
+            conn?.cancel()
+            self.cleanupAndRestart()
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3.0, execute: timeoutWork)
+
         conn.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
             switch state {
             case .ready:
-                print("Connected to \(endpoint)!")
+                timeoutWork.cancel()
+                self.isConnected = true
+                print("Successfully connected to \(endpoint)!")
                 fflush(stdout)
                 DispatchQueue.main.async {
                     if let win = NSApplication.shared.windows.first,
@@ -284,17 +300,24 @@ class DisplayClient {
                         label.removeFromSuperview()
                     }
                 }
-                self?.framed?.startReceiving(handler: { type, payload in
+                fc.startReceiving(handler: { [weak self] type, payload in
                     self?.handle(type: type, payload: payload)
                 })
+            case .waiting(let err):
+                print("Connection waiting (\(endpoint)): \(err)")
+                fflush(stdout)
             case .failed(let err):
-                print("Connection failed: \(err)")
+                timeoutWork.cancel()
+                self.isConnected = false
+                print("Connection failed (\(endpoint)): \(err)")
                 fflush(stdout)
-                self?.cleanupAndRestart()
+                self.cleanupAndRestart()
             case .cancelled:
-                print("Connection cancelled")
+                timeoutWork.cancel()
+                self.isConnected = false
+                print("Connection cancelled (\(endpoint))")
                 fflush(stdout)
-                self?.cleanupAndRestart()
+                self.cleanupAndRestart()
             default: break
             }
         }
@@ -302,9 +325,10 @@ class DisplayClient {
     }
 
     private func cleanupAndRestart() {
+        isConnected = false
         framed = nil
         formatDesc = nil
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.start()
         }
     }

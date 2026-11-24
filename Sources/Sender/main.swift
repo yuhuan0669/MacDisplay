@@ -65,7 +65,7 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
         cv.autoresizingMask = [.width, .height]
 
         // Status badge
-        statusLabel = NSTextField(labelWithString: "● 正在投屏 (50 Mbps / 30fps)")
+        statusLabel = NSTextField(labelWithString: "● 正在投屏 (35 Mbps / 30fps)")
         statusLabel.textColor = .systemGreen
         statusLabel.font = .systemFont(ofSize: 15, weight: .bold)
         statusLabel.frame = NSRect(x: 20, y: 155, width: 320, height: 24)
@@ -103,9 +103,9 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
     func showPermissionRequiredUI() {
         statusLabel.stringValue = "⚠️ 缺少屏幕录制权限"
         statusLabel.textColor = .systemRed
-        clientLabel.stringValue = "请点击下方按钮，在系统设置中允许权限"
+        clientLabel.stringValue = "设置中开启后若有弹窗，请点击【退出并重新打开】"
         clientLabel.textColor = .systemRed
-        toggleButton.title = "打开权限设置"
+        toggleButton.title = "去设置开启权限"
         toggleButton.action = #selector(openScreenRecordingSettings)
         controlWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -117,7 +117,7 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.open(url)
         }
         // Check periodically if granted
-        Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] timer in
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             if CGPreflightScreenCaptureAccess() {
                 timer.invalidate()
                 self?.toggleButton.action = #selector(self?.toggleStreaming)

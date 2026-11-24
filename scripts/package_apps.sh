@@ -47,7 +47,9 @@ cat > "$SENDER_APP/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
-codesign --force --deep -s - "$SENDER_APP"
+# Sign with stable designated requirement so macOS TCC remembers permission across rebuilds
+codesign --force --deep -s - -i "com.macdisplay.sender" --requirements '=designated => identifier "com.macdisplay.sender"' "$SENDER_APP"
+codesign --verify --deep --strict "$SENDER_APP"
 
 # 2. Package Receiver.app
 echo "==> Packaging MacDisplay Receiver.app..."
@@ -83,6 +85,29 @@ cat > "$RECEIVER_APP/Contents/Info.plist" << 'EOF'
 </plist>
 EOF
 
-codesign --force --deep -s - "$RECEIVER_APP"
+codesign --force --deep -s - -i "com.macdisplay.receiver" --requirements '=designated => identifier "com.macdisplay.receiver"' "$RECEIVER_APP"
+codesign --verify --deep --strict "$RECEIVER_APP"
 
-echo "==> Applications packaged in $OUTPUT_DIR"
+echo "==> Applications packaged and signed successfully in $OUTPUT_DIR"
+
+if [ "$1" = "--install-sender" ] || [ "$1" = "--install-all" ]; then
+    echo "==> Installing MacDisplay Sender.app to /Applications and Desktop..."
+    rm -rf "/Applications/MacDisplay Sender.app"
+    cp -R "$SENDER_APP" /Applications/
+    rm -rf "$HOME/Desktop/MacDisplay Sender.app"
+    cp -R "$SENDER_APP" "$HOME/Desktop/"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/MacDisplay Sender.app"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$HOME/Desktop/MacDisplay Sender.app"
+    echo "==> Sender installation verified."
+fi
+
+if [ "$1" = "--install-receiver" ] || [ "$1" = "--install-all" ]; then
+    echo "==> Installing MacDisplay Receiver.app to /Applications and Desktop..."
+    rm -rf "/Applications/MacDisplay Receiver.app"
+    cp -R "$RECEIVER_APP" /Applications/
+    rm -rf "$HOME/Desktop/MacDisplay Receiver.app"
+    cp -R "$RECEIVER_APP" "$HOME/Desktop/"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/MacDisplay Receiver.app"
+    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$HOME/Desktop/MacDisplay Receiver.app"
+    echo "==> Receiver installation verified."
+fi
