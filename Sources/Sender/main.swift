@@ -330,17 +330,18 @@ func setupEncoder(width: Int, height: Int) {
 
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime,             value: kCFBooleanTrue)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxFrameDelayCount,   value: 0 as CFNumber)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,         value: kVTProfileLevel_H264_High_AutoLevel)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_H264EntropyMode,     value: kVTH264EntropyMode_CABAC)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,       value: bitrate as CFNumber)
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_Quality,              value: 0.95 as CFNumber)
-    VTSessionSetProperty(s, key: "MaxAllowedFrameQP" as CFString,                value: NSNumber(value: 28))
-    VTSessionSetProperty(s, key: "MinAllowedFrameQP" as CFString,                value: NSNumber(value: 10))
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_Quality,              value: 0.85 as CFNumber)
+    VTSessionSetProperty(s, key: "MaxAllowedFrameQP" as CFString,                value: NSNumber(value: 30))
+    VTSessionSetProperty(s, key: "MinAllowedFrameQP" as CFString,                value: NSNumber(value: 12))
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,    value: NSNumber(value: 30))
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 30))
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 300))
     VTCompressionSessionPrepareToEncodeFrames(s)
     encoderSession = s
-    print("Encoder ready (\(bitrate / 1_000_000) Mbps, MaxQP: 28, CABAC, KeyInterval: 30 frames)")
+    print("Encoder ready (\(bitrate / 1_000_000) Mbps, ZeroDelay, CABAC, KeyInterval: 300 frames)")
 }
 
 // MARK: - Per-Frame Encode
@@ -400,22 +401,13 @@ func broadcastFrame(sampleBuffer: CMSampleBuffer) {
     clientsLock.unlock()
 
     for client in snapshot {
-        if keyframe {
-            client.isBusySending = true
-            client.send(type: MSG_VIDEO, payload: videoPayload) { _ in
-                client.isBusySending = false
-            }
-        } else {
-            if client.isBusySending {
-                // Backpressure: network queue is still transmitting previous frame.
-                // Drop this P-frame to prevent bufferbloat / latency buildup!
-                needKeyframe = true
-                continue
-            }
-            client.isBusySending = true
-            client.send(type: MSG_VIDEO, payload: videoPayload) { _ in
-                client.isBusySending = false
-            }
+        // If previous frame transmission is still in progress, skip this frame to prevent bufferbloat
+        if client.isBusySending {
+            continue
+        }
+        client.isBusySending = true
+        client.send(type: MSG_VIDEO, payload: videoPayload) { _ in
+            client.isBusySending = false
         }
     }
 }

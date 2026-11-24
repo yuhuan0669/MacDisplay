@@ -454,12 +454,9 @@ class DisplayClient {
             return
         }
 
-        let pts = CMTimeMake(value: frameCount, timescale: 30)
-        frameCount += 1
-
         var timingInfo = CMSampleTimingInfo(
-            duration: CMTimeMake(value: 1, timescale: 30),
-            presentationTimeStamp: pts,
+            duration: .invalid,
+            presentationTimeStamp: .invalid,
             decodeTimeStamp: .invalid
         )
 
