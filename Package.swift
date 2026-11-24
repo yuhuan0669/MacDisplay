@@ -10,12 +10,17 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "VirtualDisplayBridge",
+            path: "Sources/VirtualDisplayBridge",
+            publicHeadersPath: "include"
+        ),
+        .target(
             name: "Shared",
             path: "Sources/Shared"
         ),
         .executableTarget(
             name: "Sender",
-            dependencies: ["Shared"],
+            dependencies: ["Shared", "VirtualDisplayBridge"],
             path: "Sources/Sender",
             linkerSettings: [
                 .linkedFramework("CoreGraphics"),

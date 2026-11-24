@@ -6,13 +6,24 @@ import CoreMedia
 import Network
 import AppKit
 import Shared
+import VirtualDisplayBridge
+
+// MARK: - Display Mode
+enum DisplayMode: String {
+    case extended = "extended" // iMac 独立副屏 (16:9 无黑边)
+    case mirror   = "mirror"   // 克隆 MacBook 屏幕
+}
+
+private var currentDisplayMode: DisplayMode = .extended
 
 // MARK: - App Delegate & Controller
 class SenderAppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var controlWindow: NSWindow!
     var statusLabel: NSTextField!
+    var infoLabel: NSTextField!
     var clientLabel: NSTextField!
+    var modeSegment: NSSegmentedControl!
     var toggleButton: NSButton!
     var isStreaming = true
 
@@ -31,6 +42,11 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        stopCapture()
+        VirtualDisplayManager.shared().destroyVirtualDisplay()
+    }
+
     func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -42,6 +58,16 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
         titleItem.tag = 100
         menu.addItem(titleItem)
         menu.addItem(NSMenuItem.separator())
+
+        let extItem = NSMenuItem(title: "🖥️ 扩展屏模式 (iMac 独立副屏 16:9)", action: #selector(selectExtendedMode), keyEquivalent: "e")
+        extItem.tag = 201
+        menu.addItem(extItem)
+
+        let mirItem = NSMenuItem(title: "🪞 镜像屏模式 (克隆 MacBook 桌面)", action: #selector(selectMirrorMode), keyEquivalent: "m")
+        mirItem.tag = 202
+        menu.addItem(mirItem)
+
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "显示控制面板…", action: #selector(showWindow), keyEquivalent: "o"))
         menu.addItem(NSMenuItem(title: "暂停 / 继续投屏", action: #selector(toggleStreaming), keyEquivalent: "p"))
         menu.addItem(NSMenuItem.separator())
@@ -49,8 +75,16 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    @objc func selectExtendedMode() {
+        setMode(.extended)
+    }
+
+    @objc func selectMirrorMode() {
+        setMode(.mirror)
+    }
+
     func setupControlWindow() {
-        let frame = NSRect(x: 200, y: 300, width: 360, height: 210)
+        let frame = NSRect(x: 200, y: 300, width: 380, height: 260)
         controlWindow = NSWindow(
             contentRect: frame,
             styleMask: [.titled, .closable, .miniaturizable],
@@ -68,36 +102,58 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
         statusLabel = NSTextField(labelWithString: "● 正在投屏 (HEVC 黄金平衡 / 20Mbps)")
         statusLabel.textColor = .systemGreen
         statusLabel.font = .systemFont(ofSize: 15, weight: .bold)
-        statusLabel.frame = NSRect(x: 20, y: 155, width: 320, height: 24)
+        statusLabel.frame = NSRect(x: 20, y: 215, width: 340, height: 24)
         cv.addSubview(statusLabel)
 
+        // Mode switch
+        let modeTitle = NSTextField(labelWithString: "显示模式:")
+        modeTitle.font = .systemFont(ofSize: 13, weight: .medium)
+        modeTitle.frame = NSRect(x: 20, y: 178, width: 70, height: 22)
+        cv.addSubview(modeTitle)
+
+        modeSegment = NSSegmentedControl(labels: ["🖥️ 扩展屏 (独立副屏)", "🪞 镜像 (克隆屏)"],
+                                         trackingMode: .selectOne,
+                                         target: self,
+                                         action: #selector(modeSegmentChanged(_:)))
+        modeSegment.frame = NSRect(x: 95, y: 174, width: 265, height: 28)
+        modeSegment.selectedSegment = (currentDisplayMode == .extended) ? 0 : 1
+        cv.addSubview(modeSegment)
+
         // Details
-        let infoLabel = NSTextField(labelWithString: "分辨率: Retina 原生 (3024×1964)\n编解码: HEVC (H.265 硬件加速 20Mbps)")
+        infoLabel = NSTextField(labelWithString: "分辨率: 2560×1440 (16:9 无黑边)\n编解码: HEVC (H.265 硬件加速 20Mbps)")
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = .systemFont(ofSize: 12)
-        infoLabel.frame = NSRect(x: 20, y: 110, width: 320, height: 38)
+        infoLabel.frame = NSRect(x: 20, y: 115, width: 340, height: 42)
         cv.addSubview(infoLabel)
 
         clientLabel = NSTextField(labelWithString: "接收设备: 等待连接…")
         clientLabel.textColor = .labelColor
         clientLabel.font = .systemFont(ofSize: 13, weight: .medium)
-        clientLabel.frame = NSRect(x: 20, y: 75, width: 320, height: 22)
+        clientLabel.frame = NSRect(x: 20, y: 75, width: 340, height: 22)
         cv.addSubview(clientLabel)
 
         // Action Buttons
         toggleButton = NSButton(title: "暂停投屏", target: self, action: #selector(toggleStreaming))
         toggleButton.bezelStyle = .rounded
-        toggleButton.frame = NSRect(x: 18, y: 20, width: 150, height: 36)
+        toggleButton.frame = NSRect(x: 18, y: 20, width: 160, height: 36)
         cv.addSubview(toggleButton)
 
         let quitBtn = NSButton(title: "退出投屏", target: self, action: #selector(quitApp))
         quitBtn.bezelStyle = .rounded
-        quitBtn.frame = NSRect(x: 188, y: 20, width: 150, height: 36)
+        quitBtn.frame = NSRect(x: 202, y: 20, width: 160, height: 36)
         cv.addSubview(quitBtn)
 
         controlWindow.contentView = cv
         controlWindow.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func modeSegmentChanged(_ sender: NSSegmentedControl) {
+        if sender.selectedSegment == 0 {
+            setMode(.extended)
+        } else {
+            setMode(.mirror)
+        }
     }
 
     func showPermissionRequiredUI() {
@@ -144,6 +200,8 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func quitApp() {
+        stopCapture()
+        VirtualDisplayManager.shared().destroyVirtualDisplay()
         NSApp.terminate(nil)
     }
 
@@ -177,6 +235,21 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 self.clientLabel.stringValue = "接收设备: 等待 iMac 连接…"
                 self.clientLabel.textColor = .secondaryLabelColor
+            }
+
+            if currentDisplayMode == .extended {
+                self.infoLabel.stringValue = "模式: 🖥️ 扩展屏 (16:9 铺满 iMac, 零黑边)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 30fps (HEVC 20Mbps)"
+                self.modeSegment.selectedSegment = 0
+            } else {
+                self.infoLabel.stringValue = "模式: 🪞 镜像屏 (克隆 MacBook 桌面)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 30fps (HEVC 20Mbps)"
+                self.modeSegment.selectedSegment = 1
+            }
+
+            if let extItem = self.statusItem.menu?.item(withTag: 201) {
+                extItem.state = (currentDisplayMode == .extended) ? .on : .off
+            }
+            if let mirItem = self.statusItem.menu?.item(withTag: 202) {
+                mirItem.state = (currentDisplayMode == .mirror) ? .on : .off
             }
         }
     }
@@ -244,6 +317,24 @@ func startServer() {
     listener.start(queue: .global())
 }
 
+func setMode(_ mode: DisplayMode) {
+    guard mode != currentDisplayMode else { return }
+    print("Switching display mode to: \(mode.rawValue)")
+    stopCapture()
+
+    if mode == .mirror {
+        VirtualDisplayManager.shared().destroyVirtualDisplay()
+    }
+
+    currentDisplayMode = mode
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+        startCapture()
+        needKeyframe = true
+        appDelegate.updateUI()
+    }
+}
+
 // MARK: - Capture
 func startCapture() {
     guard displayStream == nil else { return }
@@ -255,28 +346,57 @@ func startCapture() {
         return
     }
 
-    let displayID = CGMainDisplayID()
-    if let mode = CGDisplayCopyDisplayMode(displayID) {
+    var targetDisplayID: CGDirectDisplayID = CGMainDisplayID()
+
+    if currentDisplayMode == .extended {
+        let vdm = VirtualDisplayManager.shared()
+        if !vdm.isRunning {
+            // 2560x1440 16:9 matches iMac 5K aspect ratio perfectly with zero black bars
+            let ok = vdm.createVirtualDisplay(withWidth: 2560, height: 1440, hiDPI: false, name: "iMac 5K 扩展显示器")
+            if ok {
+                targetDisplayID = vdm.displayID
+                print("Created Virtual Display with ID: \(targetDisplayID)")
+            } else {
+                print("Failed to create Virtual Display, falling back to Main Display")
+                currentDisplayMode = .mirror
+                targetDisplayID = CGMainDisplayID()
+            }
+        } else {
+            targetDisplayID = vdm.displayID
+        }
+    }
+
+    if let mode = CGDisplayCopyDisplayMode(targetDisplayID) {
         capturedWidth  = mode.pixelWidth
         capturedHeight = mode.pixelHeight
     } else {
-        capturedWidth  = CGDisplayPixelsWide(displayID) * 2
-        capturedHeight = CGDisplayPixelsHigh(displayID) * 2
+        capturedWidth  = CGDisplayPixelsWide(targetDisplayID)
+        capturedHeight = CGDisplayPixelsHigh(targetDisplayID)
     }
     capturedWidth  -= (capturedWidth % 2)
     capturedHeight -= (capturedHeight % 2)
-    print("Display \(displayID): \(capturedWidth)×\(capturedHeight) (Retina Native)")
+    print("Capturing Display \(targetDisplayID): \(capturedWidth)×\(capturedHeight) (Mode: \(currentDisplayMode.rawValue))")
 
-    if encoderSession == nil {
-        setupEncoder(width: capturedWidth, height: capturedHeight)
+    if let session = encoderSession {
+        VTCompressionSessionInvalidate(session)
+        encoderSession = nil
     }
+    setupEncoder(width: capturedWidth, height: capturedHeight)
+
+    // Notify connected clients of current display size
+    let cfg = DisplayConfig(width: UInt32(capturedWidth),
+                            height: UInt32(capturedHeight), fps: 30)
+    clientsLock.lock()
+    let snapshot = clients
+    clientsLock.unlock()
+    snapshot.forEach { $0.send(type: MSG_CONFIG, payload: cfg.data) }
 
     let props: [AnyHashable: Any] = [
         "kCGDisplayStreamMinimumFrameTime": NSNumber(value: 1.0 / 30.0),
         "kCGDisplayStreamShowCursor": kCFBooleanTrue as Any
     ]
     displayStream = CGDisplayStream(
-        dispatchQueueDisplay: displayID,
+        dispatchQueueDisplay: targetDisplayID,
         outputWidth:  capturedWidth,
         outputHeight: capturedHeight,
         pixelFormat:  Int32(kCVPixelFormatType_32BGRA),
@@ -297,7 +417,7 @@ func startCapture() {
         print("CGDisplayStream start failed")
         return
     }
-    print("Capture started with cursor embedded")
+    print("Capture started with cursor embedded on Display \(targetDisplayID)")
 }
 
 func stopCapture() {
