@@ -249,6 +249,8 @@ class DisplayClient {
     private var minLatencyMs: Int64 = Int64.max
     private var lastLatencyResetTime: Double = 0
     private var lastLogTime: Double = 0
+    private var nextPTS: CMTime = .invalid
+    private let frameDuration = CMTime(value: 1, timescale: 60)
 
     private var isConnected = false
 
@@ -345,6 +347,7 @@ class DisplayClient {
         framed = nil
         formatDesc = nil
         lastFormatPayload = nil
+        nextPTS = .invalid
         DispatchQueue.main.async { [weak self] in
             self?.layer.flush()
         }
@@ -486,13 +489,31 @@ class DisplayClient {
             return
         }
 
-        // Use valid host clock timestamp matching controlTimebase to prevent FigVideoQueue frame drops
+        // Frame Pacing Scheduler: maps incoming network frames onto clean 60 FPS VSYNC slots without frame eviction
         let hostClock = CMClockGetHostTimeClock()
-        let hostTime = CMClockGetTime(hostClock)
+        let currentHostTime = CMClockGetTime(hostClock)
+
+        var pts: CMTime
+        if nextPTS == .invalid || CMTimeCompare(nextPTS, currentHostTime) < 0 {
+            // First frame or resumed from idle: anchor to current host clock
+            pts = currentHostTime
+            nextPTS = CMTimeAdd(currentHostTime, frameDuration)
+        } else {
+            // Burst frame pacing: schedule at clean 16.6ms intervals
+            let maxLead = CMTime(value: 3, timescale: 60) // 50ms (3 frames) max jitter lead
+            if CMTimeCompare(nextPTS, CMTimeAdd(currentHostTime, maxLead)) > 0 {
+                // If queue drifted too far ahead, resync to avoid lag build-up
+                pts = currentHostTime
+                nextPTS = CMTimeAdd(currentHostTime, frameDuration)
+            } else {
+                pts = nextPTS
+                nextPTS = CMTimeAdd(nextPTS, frameDuration)
+            }
+        }
 
         var timingInfo = CMSampleTimingInfo(
-            duration: CMTime(value: 1, timescale: 60),
-            presentationTimeStamp: hostTime,
+            duration: frameDuration,
+            presentationTimeStamp: pts,
             decodeTimeStamp: .invalid
         )
 
@@ -512,13 +533,9 @@ class DisplayClient {
 
         guard sbStatus == noErr, let sampleBuffer = sb else { return }
 
-        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
-           CFArrayGetCount(attachments) > 0 {
-            let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
-            CFDictionarySetValue(dict,
-                                 Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-                                 Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
-        }
+        // NOTE: We deliberately DO NOT set kCMSampleAttachmentKey_DisplayImmediately!
+        // This ensures FigVideoQueue presents each frame smoothly at its 16.6ms VSYNC slot,
+        // eliminating the 75% frame eviction and mouse teleportation bug!
 
         if self.layer.status == .failed {
             print("Layer failed: \(String(describing: self.layer.error))")
