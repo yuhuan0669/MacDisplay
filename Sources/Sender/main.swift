@@ -238,10 +238,10 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             }
 
             if currentDisplayMode == .extended {
-                self.infoLabel.stringValue = "模式: 🖥️ 扩展屏 (16:9 铺满 iMac, 零黑边)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 30fps (HEVC 20Mbps)"
+                self.infoLabel.stringValue = "模式: 🖥️ 扩展屏 (16:9 铺满 iMac, 零黑边)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 60fps (HEVC 20Mbps)"
                 self.modeSegment.selectedSegment = 0
             } else {
-                self.infoLabel.stringValue = "模式: 🪞 镜像屏 (克隆 MacBook 桌面)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 30fps (HEVC 20Mbps)"
+                self.infoLabel.stringValue = "模式: 🪞 镜像屏 (克隆 MacBook 桌面)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 60fps (HEVC 20Mbps)"
                 self.modeSegment.selectedSegment = 1
             }
 
@@ -296,7 +296,7 @@ func startServer() {
         conn.start(queue: .global())
 
         let cfg = DisplayConfig(width: UInt32(capturedWidth),
-                                height: UInt32(capturedHeight), fps: 30)
+                                height: UInt32(capturedHeight), fps: 60)
         fc.send(type: MSG_CONFIG, payload: cfg.data)
 
         if let fmt = lastFormatData {
@@ -395,14 +395,14 @@ func startCapture() {
 
     // Notify connected clients of current display size
     let cfg = DisplayConfig(width: UInt32(capturedWidth),
-                            height: UInt32(capturedHeight), fps: 30)
+                            height: UInt32(capturedHeight), fps: 60)
     clientsLock.lock()
     let snapshot = clients
     clientsLock.unlock()
     snapshot.forEach { $0.send(type: MSG_CONFIG, payload: cfg.data) }
 
     let props: [AnyHashable: Any] = [
-        "kCGDisplayStreamMinimumFrameTime": NSNumber(value: 1.0 / 30.0),
+        "kCGDisplayStreamMinimumFrameTime": NSNumber(value: 1.0 / 60.0),
         "kCGDisplayStreamShowCursor": kCFBooleanTrue as Any
     ]
     displayStream = CGDisplayStream(
@@ -473,11 +473,11 @@ func setupEncoder(width: Int, height: Int) {
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,         value: kVTProfileLevel_HEVC_Main_AutoLevel)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,       value: bitrate as CFNumber)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_Quality,              value: 0.95 as CFNumber)
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,    value: NSNumber(value: 30))
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 30))
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,    value: NSNumber(value: 60))
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 60))
     VTCompressionSessionPrepareToEncodeFrames(s)
     encoderSession = s
-    print("HEVC Hardware Encoder ready (\(width)x\(height), \(bitrate / 1_000_000) Mbps, ZeroDelay, KeyInterval: 30 frames)")
+    print("HEVC Hardware Encoder ready (\(width)x\(height), \(bitrate / 1_000_000) Mbps, ZeroDelay, 60 FPS, KeyInterval: 60 frames)")
 }
 
 // MARK: - Per-Frame Encode
@@ -489,7 +489,7 @@ func encodeFrame(surface: IOSurface) {
     let cvErr = CVPixelBufferCreateWithIOSurface(nil, surface, attrs, &unmanagedPB)
     guard cvErr == kCVReturnSuccess, let pixelBuffer = unmanagedPB?.takeRetainedValue() else { return }
 
-    let pts = CMTimeMake(value: frameIndex, timescale: 30)
+    let pts = CMTimeMake(value: frameIndex, timescale: 60)
     frameIndex += 1
     var frameProps: CFDictionary? = nil
     if needKeyframe {

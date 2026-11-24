@@ -491,7 +491,7 @@ class DisplayClient {
         let hostTime = CMClockGetTime(hostClock)
 
         var timingInfo = CMSampleTimingInfo(
-            duration: CMTime(value: 1, timescale: 30),
+            duration: CMTime(value: 1, timescale: 60),
             presentationTimeStamp: hostTime,
             decodeTimeStamp: .invalid
         )
