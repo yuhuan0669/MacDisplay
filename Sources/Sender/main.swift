@@ -65,14 +65,14 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
         cv.autoresizingMask = [.width, .height]
 
         // Status badge
-        statusLabel = NSTextField(labelWithString: "● 正在投屏 (45 Mbps / 30fps)")
+        statusLabel = NSTextField(labelWithString: "● 正在投屏 (HEVC 视网膜极清 / 30fps)")
         statusLabel.textColor = .systemGreen
         statusLabel.font = .systemFont(ofSize: 15, weight: .bold)
         statusLabel.frame = NSRect(x: 20, y: 155, width: 320, height: 24)
         cv.addSubview(statusLabel)
 
         // Details
-        let infoLabel = NSTextField(labelWithString: "分辨率: Retina 原生 (3024×1964)\n网络监听: 端口 7892 (Bonjour)")
+        let infoLabel = NSTextField(labelWithString: "分辨率: Retina 原生 (3024×1964)\n编解码: HEVC (H.265 硬件加速 30Mbps)")
         infoLabel.textColor = .secondaryLabelColor
         infoLabel.font = .systemFont(ofSize: 12)
         infoLabel.frame = NSRect(x: 20, y: 110, width: 320, height: 38)
@@ -156,7 +156,7 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             clientsLock.unlock()
 
             if self.isStreaming {
-                self.statusLabel.stringValue = "● 正在投屏 (45 Mbps / 30fps)"
+                self.statusLabel.stringValue = "● 正在投屏 (HEVC 视网膜极清 / 30fps)"
                 self.statusLabel.textColor = .systemGreen
                 self.toggleButton.title = "暂停投屏"
                 if let item = self.statusItem.menu?.item(withTag: 100) {
@@ -309,39 +309,40 @@ func stopCapture() {
 // MARK: - Encoder Setup
 func setupEncoder(width: Int, height: Int) {
     var session: VTCompressionSession?
-    let bitrate = 45_000_000
+    let bitrate = 30_000_000 // 30 Mbps HEVC provides pristine visual fidelity (exceeds 50 Mbps H.264)
 
     let cb: VTCompressionOutputCallback = { _, _, status, _, sampleBuffer in
         guard status == noErr, let sb = sampleBuffer else { return }
         broadcastFrame(sampleBuffer: sb)
     }
+    let encoderSpec: [CFString: Any] = [
+        kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: kCFBooleanTrue as Any,
+        kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: kCFBooleanTrue as Any
+    ]
     let err = VTCompressionSessionCreate(
         allocator: nil,
         width: Int32(width), height: Int32(height),
-        codecType: kCMVideoCodecType_H264,
-        encoderSpecification: nil,
+        codecType: kCMVideoCodecType_HEVC,
+        encoderSpecification: encoderSpec as CFDictionary,
         imageBufferAttributes: nil,
         compressedDataAllocator: nil,
         outputCallback: cb,
         refcon: nil,
         compressionSessionOut: &session
     )
-    guard err == noErr, let s = session else { fatalError("Encoder create failed: \(err)") }
+    guard err == noErr, let s = session else { fatalError("HEVC Encoder create failed: \(err)") }
 
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime,             value: kCFBooleanTrue)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxFrameDelayCount,   value: 0 as CFNumber)
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,         value: kVTProfileLevel_H264_High_AutoLevel)
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_H264EntropyMode,     value: kVTH264EntropyMode_CABAC)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,         value: kVTProfileLevel_HEVC_Main_AutoLevel)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,       value: bitrate as CFNumber)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_Quality,              value: 0.95 as CFNumber)
-    VTSessionSetProperty(s, key: "MaxAllowedFrameQP" as CFString,                value: NSNumber(value: 24))
-    VTSessionSetProperty(s, key: "MinAllowedFrameQP" as CFString,                value: NSNumber(value: 10))
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,    value: NSNumber(value: 30))
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 60))
     VTCompressionSessionPrepareToEncodeFrames(s)
     encoderSession = s
-    print("Encoder ready (\(bitrate / 1_000_000) Mbps, ZeroDelay, CABAC, MaxQP: 24, KeyInterval: 60 frames)")
+    print("HEVC Hardware Encoder ready (\(bitrate / 1_000_000) Mbps, ZeroDelay, KeyInterval: 60 frames)")
 }
 
 // MARK: - Per-Frame Encode
@@ -421,26 +422,28 @@ func isKeyframe(_ sb: CMSampleBuffer) -> Bool {
 }
 
 func extractParameterSets(_ fmt: CMVideoFormatDescription) -> Data? {
-    var spsPtr: UnsafePointer<UInt8>?
-    var spsSize = 0
-    var ppsPtr: UnsafePointer<UInt8>?
-    var ppsSize = 0
-    let err1 = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+    var count = 0
+    let err = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
         fmt, parameterSetIndex: 0,
-        parameterSetPointerOut: &spsPtr, parameterSetSizeOut: &spsSize,
-        parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
-    let err2 = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
-        fmt, parameterSetIndex: 1,
-        parameterSetPointerOut: &ppsPtr, parameterSetSizeOut: &ppsSize,
-        parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil)
-    guard err1 == noErr, err2 == noErr, let sps = spsPtr, let pps = ppsPtr else { return nil }
+        parameterSetPointerOut: nil, parameterSetSizeOut: nil,
+        parameterSetCountOut: &count, nalUnitHeaderLengthOut: nil
+    )
+    guard err == noErr, count > 0 else { return nil }
 
     var d = Data()
-    var sLen = UInt16(spsSize).littleEndian
-    withUnsafeBytes(of: &sLen) { d.append(contentsOf: $0) }
-    d.append(sps, count: spsSize)
-    var pLen = UInt16(ppsSize).littleEndian
-    withUnsafeBytes(of: &pLen) { d.append(contentsOf: $0) }
-    d.append(pps, count: ppsSize)
+    d.append(UInt8(count))
+    for i in 0..<count {
+        var ptr: UnsafePointer<UInt8>?
+        var size = 0
+        let status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
+            fmt, parameterSetIndex: i,
+            parameterSetPointerOut: &ptr, parameterSetSizeOut: &size,
+            parameterSetCountOut: nil, nalUnitHeaderLengthOut: nil
+        )
+        guard status == noErr, let p = ptr, size > 0 else { return nil }
+        var sLen = UInt16(size).littleEndian
+        withUnsafeBytes(of: &sLen) { d.append(contentsOf: $0) }
+        d.append(p, count: size)
+    }
     return d
 }

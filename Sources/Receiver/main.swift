@@ -349,49 +349,58 @@ class DisplayClient {
     }
 
     private func handleFormat(_ payload: Data) {
-        guard payload.count >= 4 else { return }
-        let s0 = payload[payload.startIndex]
-        let s1 = payload[payload.startIndex + 1]
-        let sLen = Int(UInt16(s0) | (UInt16(s1) << 8))
+        guard payload.count >= 1 else { return }
+        let count = Int(payload[payload.startIndex])
+        guard count > 0 else { return }
 
-        guard payload.count >= 4 + sLen else { return }
-        let p0 = payload[payload.startIndex + 2 + sLen]
-        let p1 = payload[payload.startIndex + 3 + sLen]
-        let pLen = Int(UInt16(p0) | (UInt16(p1) << 8))
+        var offset = payload.startIndex + 1
+        var paramSetDataList: [Data] = []
 
-        guard payload.count >= 4 + sLen + pLen else { return }
-        let spsStart = payload.startIndex + 2
-        let spsEnd = spsStart + sLen
-        let ppsStart = payload.startIndex + 4 + sLen
-        let ppsEnd = ppsStart + pLen
+        for _ in 0..<count {
+            guard payload.count >= offset + 2 else { return }
+            let l0 = UInt16(payload[offset])
+            let l1 = UInt16(payload[offset + 1])
+            let len = Int(l0 | (l1 << 8))
+            offset += 2
+            guard payload.count >= offset + len else { return }
+            let sub = payload.subdata(in: offset ..< (offset + len))
+            paramSetDataList.append(sub)
+            offset += len
+        }
+        guard paramSetDataList.count == count else { return }
 
-        let spsData = payload.subdata(in: spsStart ..< spsEnd)
-        let ppsData = payload.subdata(in: ppsStart ..< ppsEnd)
+        var ptrs: [UnsafePointer<UInt8>] = []
+        var sizes: [Int] = []
+        var heapBlocks: [UnsafeMutablePointer<UInt8>] = []
 
-        spsData.withUnsafeBytes { spsRaw in
-            ppsData.withUnsafeBytes { ppsRaw in
-                let spsPtr = spsRaw.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                let ppsPtr = ppsRaw.baseAddress!.assumingMemoryBound(to: UInt8.self)
-                var paramSets = [spsPtr, ppsPtr]
-                var sizes = [spsData.count, ppsData.count]
-                var desc: CMVideoFormatDescription?
-                let err = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-                    allocator: kCFAllocatorDefault,
-                    parameterSetCount: 2,
-                    parameterSetPointers: &paramSets,
-                    parameterSetSizes: &sizes,
-                    nalUnitHeaderLength: 4,
-                    formatDescriptionOut: &desc
-                )
-                if err == noErr, let d = desc {
-                    self.formatDesc = d
-                    print("Updated FormatDesc successfully")
-                    fflush(stdout)
-                } else {
-                    print("FormatDesc error: \(err)")
-                    fflush(stdout)
-                }
-            }
+        for data in paramSetDataList {
+            let block = UnsafeMutablePointer<UInt8>.allocate(capacity: data.count)
+            data.copyBytes(to: block, count: data.count)
+            heapBlocks.append(block)
+            ptrs.append(UnsafePointer(block))
+            sizes.append(data.count)
+        }
+        defer {
+            for b in heapBlocks { b.deallocate() }
+        }
+
+        var desc: CMVideoFormatDescription?
+        let err = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+            allocator: kCFAllocatorDefault,
+            parameterSetCount: count,
+            parameterSetPointers: ptrs,
+            parameterSetSizes: sizes,
+            nalUnitHeaderLength: 4,
+            extensions: nil,
+            formatDescriptionOut: &desc
+        )
+        if err == noErr, let d = desc {
+            self.formatDesc = d
+            print("Updated HEVC FormatDesc successfully (\(count) parameter sets: VPS/SPS/PPS)")
+            fflush(stdout)
+        } else {
+            print("HEVC FormatDesc error: \(err)")
+            fflush(stdout)
         }
     }
 
