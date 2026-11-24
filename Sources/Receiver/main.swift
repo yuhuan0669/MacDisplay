@@ -30,6 +30,20 @@ class VideoContainerView: NSView {
         displayLayer.frame = bounds
         displayLayer.videoGravity = .resizeAspect
         displayLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        displayLayer.preventsDisplaySleepDuringVideoPlayback = true
+
+        var timebase: CMTimebase?
+        CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &timebase
+        )
+        if let tb = timebase {
+            displayLayer.controlTimebase = tb
+            CMTimebaseSetTime(tb, time: CMClockGetTime(CMClockGetHostTimeClock()))
+            CMTimebaseSetRate(tb, rate: 1.0)
+        }
+
         layer?.addSublayer(displayLayer)
 
         setupFloatingControls()
@@ -230,9 +244,11 @@ class DisplayClient {
     private var browser: NWBrowser?
     private var framed: FramedConnection?
     private var formatDesc: CMVideoFormatDescription?
+    private var lastFormatPayload: Data?
     private var frameCount: Int64 = 0
     private var minLatencyMs: Int64 = Int64.max
     private var lastLatencyResetTime: Double = 0
+    private var lastLogTime: Double = 0
 
     private var isConnected = false
 
@@ -328,6 +344,10 @@ class DisplayClient {
         isConnected = false
         framed = nil
         formatDesc = nil
+        lastFormatPayload = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.layer.flush()
+        }
         DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.start()
         }
@@ -349,6 +369,9 @@ class DisplayClient {
     }
 
     private func handleFormat(_ payload: Data) {
+        if let last = lastFormatPayload, last == payload, formatDesc != nil {
+            return
+        }
         guard payload.count >= 1 else { return }
         let count = Int(payload[payload.startIndex])
         guard count > 0 else { return }
@@ -396,6 +419,7 @@ class DisplayClient {
         )
         if err == noErr, let d = desc {
             self.formatDesc = d
+            self.lastFormatPayload = payload
             print("Updated HEVC FormatDesc successfully (\(count) parameter sets: VPS/SPS/PPS)")
             fflush(stdout)
         } else {
@@ -407,6 +431,8 @@ class DisplayClient {
     private func handleVideo(_ payload: Data) {
         guard let fmt = formatDesc else { return }
         guard payload.count > 8 else { return }
+
+        frameCount += 1
 
         let start = payload.startIndex
         let b0 = UInt32(payload[start])
@@ -422,24 +448,21 @@ class DisplayClient {
         let high = b4 | (b5 << 8) | (b6 << 16) | (b7 << 24)
 
         let sentTimeMs = Int64(UInt64(low) | (UInt64(high) << 32))
-
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let rawDelta = nowMs - sentTimeMs
 
-        // Dynamic baseline latency calibration
+        // Dynamic baseline latency calibration for diagnostics
         let nowSec = Date().timeIntervalSinceReferenceDate
-        if minLatencyMs == Int64.max || rawDelta < minLatencyMs || (nowSec - lastLatencyResetTime > 10.0) {
+        if minLatencyMs == Int64.max || rawDelta < minLatencyMs || (nowSec - lastLatencyResetTime > 30.0) {
             minLatencyMs = rawDelta
             lastLatencyResetTime = nowSec
         }
 
-        let queueLag = rawDelta - minLatencyMs
-        // If queue backlog exceeds 120ms (e.g. Wi-Fi momentary stutter), flush displayLayer to instantly catch up
-        if queueLag > 120 {
-            DispatchQueue.main.async { [weak self] in
-                self?.layer.flush()
-            }
-            minLatencyMs = rawDelta
+        if nowSec - lastLogTime > 5.0 {
+            lastLogTime = nowSec
+            let estimatedTransitMs = max(0, rawDelta - minLatencyMs)
+            print("Video stream running smoothly: frame #\(frameCount), transit jitter: ~\(estimatedTransitMs)ms")
+            fflush(stdout)
         }
 
         let count = payload.count - 8
@@ -463,9 +486,13 @@ class DisplayClient {
             return
         }
 
+        // Use valid host clock timestamp matching controlTimebase to prevent FigVideoQueue frame drops
+        let hostClock = CMClockGetHostTimeClock()
+        let hostTime = CMClockGetTime(hostClock)
+
         var timingInfo = CMSampleTimingInfo(
-            duration: .invalid,
-            presentationTimeStamp: .invalid,
+            duration: CMTime(value: 1, timescale: 30),
+            presentationTimeStamp: hostTime,
             decodeTimeStamp: .invalid
         )
 
@@ -487,11 +514,10 @@ class DisplayClient {
 
         if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
            CFArrayGetCount(attachments) > 0 {
-            let dict = CFArrayGetValueAtIndex(attachments, 0)
-            let rawDict = unsafeBitCast(dict, to: CFMutableDictionary.self)
-            CFDictionarySetValue(rawDict,
-                                 unsafeBitCast(kCMSampleAttachmentKey_DisplayImmediately, to: UnsafeRawPointer.self),
-                                 unsafeBitCast(kCFBooleanTrue, to: UnsafeRawPointer.self))
+            let dict = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+            CFDictionarySetValue(dict,
+                                 Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                                 Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
         }
 
         if self.layer.status == .failed {

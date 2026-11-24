@@ -339,10 +339,10 @@ func setupEncoder(width: Int, height: Int) {
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,       value: bitrate as CFNumber)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_Quality,              value: 0.95 as CFNumber)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,    value: NSNumber(value: 30))
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 60))
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 30))
     VTCompressionSessionPrepareToEncodeFrames(s)
     encoderSession = s
-    print("HEVC Hardware Encoder ready (\(bitrate / 1_000_000) Mbps, ZeroDelay, KeyInterval: 60 frames)")
+    print("HEVC Hardware Encoder ready (\(bitrate / 1_000_000) Mbps, ZeroDelay, KeyInterval: 30 frames)")
 }
 
 // MARK: - Per-Frame Encode
@@ -374,16 +374,14 @@ func broadcastFrame(sampleBuffer: CMSampleBuffer) {
     let totalLen = CMBlockBufferGetDataLength(blockBuf)
     guard totalLen > 0 else { return }
 
-    let keyframe = isKeyframe(sampleBuffer)
-
-    if (keyframe || lastFormatData == nil), let fmt = CMSampleBufferGetFormatDescription(sampleBuffer) {
-        if let psData = extractParameterSets(fmt) {
-            lastFormatData = psData
-            clientsLock.lock()
-            let snapshot = clients
-            clientsLock.unlock()
-            snapshot.forEach { $0.send(type: MSG_FORMAT, payload: psData) }
-        }
+    if let fmt = CMSampleBufferGetFormatDescription(sampleBuffer),
+       let psData = extractParameterSets(fmt),
+       lastFormatData != psData {
+        lastFormatData = psData
+        clientsLock.lock()
+        let snapshot = clients
+        clientsLock.unlock()
+        snapshot.forEach { $0.send(type: MSG_FORMAT, payload: psData) }
     }
 
     var frameData = Data(count: totalLen)
@@ -402,14 +400,7 @@ func broadcastFrame(sampleBuffer: CMSampleBuffer) {
     clientsLock.unlock()
 
     for client in snapshot {
-        // If previous frame transmission is still in progress, skip this frame to prevent bufferbloat
-        if client.isBusySending {
-            continue
-        }
-        client.isBusySending = true
-        client.send(type: MSG_VIDEO, payload: videoPayload) { _ in
-            client.isBusySending = false
-        }
+        client.send(type: MSG_VIDEO, payload: videoPayload)
     }
 }
 
