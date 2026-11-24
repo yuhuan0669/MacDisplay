@@ -18,10 +18,19 @@ app.run()
 // MARK: - Interactive Video View
 class VideoContainerView: NSView {
     let displayLayer = AVSampleBufferDisplayLayer()
+    let cursorLayer = CALayer()
     var floatingBar: NSView!
     var floatingScaleBtn: NSButton!
     var floatingCloseBtn: NSButton!
     var isStretched = false
+
+    private var videoWidth: Int = 2560
+    private var videoHeight: Int = 1440
+    private var arrowImage: CGImage?
+    private var iBeamImage: CGImage?
+    private var pointingHandImage: CGImage?
+    private var currentCursorType: UInt8 = 255
+    private let transparentCursor = NSCursor(image: NSImage(size: NSSize(width: 1, height: 1)), hotSpot: .zero)
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -45,6 +54,14 @@ class VideoContainerView: NSView {
         }
 
         layer?.addSublayer(displayLayer)
+
+        // Setup Independent Hardware Cursor Layer
+        cursorLayer.bounds = CGRect(x: 0, y: 0, width: 24, height: 28)
+        cursorLayer.anchorPoint = CGPoint(x: 2.0 / 24.0, y: 26.0 / 28.0) // Tip of arrow at (2, 26)
+        cursorLayer.zPosition = 999 // Float above video content
+        cursorLayer.isHidden = true
+        layer?.addSublayer(cursorLayer)
+        updateCursorAppearance(type: 0)
 
         setupFloatingControls()
     }
@@ -115,6 +132,193 @@ class VideoContainerView: NSView {
     @objc func toggleFullScreen() {
         window?.toggleFullScreen(nil)
     }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: transparentCursor)
+        if let bar = floatingBar {
+            addCursorRect(bar.frame, cursor: .arrow)
+        }
+    }
+
+    func updateDimensions(width: Int, height: Int) {
+        guard width > 0 && height > 0 else { return }
+        videoWidth = width
+        videoHeight = height
+    }
+
+    func videoContentRect() -> CGRect {
+        guard videoWidth > 0 && videoHeight > 0 else { return bounds }
+        if isStretched { return bounds }
+
+        let viewAspect = bounds.width / bounds.height
+        let videoAspect = CGFloat(videoWidth) / CGFloat(videoHeight)
+
+        if abs(viewAspect - videoAspect) < 0.01 {
+            return bounds
+        }
+
+        if viewAspect > videoAspect {
+            // Pillarboxed (bars on left/right)
+            let w = bounds.height * videoAspect
+            let x = (bounds.width - w) / 2.0
+            return CGRect(x: x, y: 0, width: w, height: bounds.height)
+        } else {
+            // Letterboxed (bars on top/bottom)
+            let h = bounds.width / videoAspect
+            let y = (bounds.height - h) / 2.0
+            return CGRect(x: 0, y: y, width: bounds.width, height: h)
+        }
+    }
+
+    func updateCursor(_ packet: CursorMessage) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+
+            if !packet.visible {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.cursorLayer.isHidden = true
+                CATransaction.commit()
+                return
+            }
+
+            if self.currentCursorType != packet.cursorType {
+                self.currentCursorType = packet.cursorType
+                self.updateCursorAppearance(type: packet.cursorType)
+            }
+
+            let vRect = self.videoContentRect()
+            let targetX = vRect.origin.x + vRect.width * CGFloat(packet.x)
+            // Cocoa flipped=false: (1.0 - y) maps top (0.0) to top of view
+            let targetY = vRect.origin.y + vRect.height * (1.0 - CGFloat(packet.y))
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true) // Instant zero-latency position update
+            self.cursorLayer.isHidden = false
+            self.cursorLayer.position = CGPoint(x: targetX, y: targetY)
+            CATransaction.commit()
+        }
+    }
+
+    private func updateCursorAppearance(type: UInt8) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        switch type {
+        case 1: // I-Beam
+            if iBeamImage == nil { iBeamImage = makeIBeamImage() }
+            cursorLayer.contents = iBeamImage
+            cursorLayer.bounds = CGRect(x: 0, y: 0, width: 16, height: 24)
+            cursorLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        case 2: // Pointing Hand
+            if pointingHandImage == nil { pointingHandImage = makePointingHandImage() }
+            cursorLayer.contents = pointingHandImage
+            cursorLayer.bounds = CGRect(x: 0, y: 0, width: 24, height: 28)
+            cursorLayer.anchorPoint = CGPoint(x: 6.0 / 24.0, y: 26.0 / 28.0)
+        default: // Arrow
+            if arrowImage == nil { arrowImage = makeArrowImage() }
+            cursorLayer.contents = arrowImage
+            cursorLayer.bounds = CGRect(x: 0, y: 0, width: 24, height: 28)
+            cursorLayer.anchorPoint = CGPoint(x: 2.0 / 24.0, y: 26.0 / 28.0)
+        }
+        CATransaction.commit()
+    }
+
+    private func makeArrowImage() -> CGImage? {
+        let size = NSSize(width: 24, height: 28)
+        let img = NSImage(size: size, flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 1, height: -2), blur: 3, color: NSColor.black.withAlphaComponent(0.4).cgColor)
+
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 2, y: 26))      // Tip
+            path.addLine(to: CGPoint(x: 2, y: 8))    // Bottom left
+            path.addLine(to: CGPoint(x: 6.8, y: 12.5))
+            path.addLine(to: CGPoint(x: 10.5, y: 4.5))
+            path.addLine(to: CGPoint(x: 13.5, y: 6.0))
+            path.addLine(to: CGPoint(x: 9.8, y: 13.8))
+            path.addLine(to: CGPoint(x: 16.0, y: 13.8))
+            path.closeSubpath()
+
+            ctx.addPath(path)
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fillPath()
+            ctx.restoreGState()
+
+            ctx.addPath(path)
+            ctx.setStrokeColor(NSColor.black.cgColor)
+            ctx.setLineWidth(1.3)
+            ctx.setLineJoin(.round)
+            ctx.strokePath()
+            return true
+        }
+        return img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    private func makeIBeamImage() -> CGImage? {
+        let size = NSSize(width: 16, height: 24)
+        let img = NSImage(size: size, flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 1, height: -1), blur: 2, color: NSColor.black.withAlphaComponent(0.3).cgColor)
+
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 4, y: 21))
+            path.addLine(to: CGPoint(x: 12, y: 21))
+            path.move(to: CGPoint(x: 8, y: 21))
+            path.addLine(to: CGPoint(x: 8, y: 3))
+            path.move(to: CGPoint(x: 4, y: 3))
+            path.addLine(to: CGPoint(x: 12, y: 3))
+
+            ctx.addPath(path)
+            ctx.setStrokeColor(NSColor.black.cgColor)
+            ctx.setLineWidth(2.0)
+            ctx.setLineCap(.round)
+            ctx.strokePath()
+            ctx.restoreGState()
+            return true
+        }
+        return img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
+
+    private func makePointingHandImage() -> CGImage? {
+        let size = NSSize(width: 24, height: 28)
+        let img = NSImage(size: size, flipped: false) { rect in
+            guard let ctx = NSGraphicsContext.current?.cgContext else { return false }
+            ctx.saveGState()
+            ctx.setShadow(offset: CGSize(width: 1, height: -2), blur: 3, color: NSColor.black.withAlphaComponent(0.4).cgColor)
+
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: 7, y: 26))      // Index finger tip
+            path.addLine(to: CGPoint(x: 10, y: 26))
+            path.addLine(to: CGPoint(x: 10, y: 16))
+            path.addLine(to: CGPoint(x: 13, y: 16))
+            path.addLine(to: CGPoint(x: 13, y: 14))
+            path.addLine(to: CGPoint(x: 16, y: 14))
+            path.addLine(to: CGPoint(x: 16, y: 12))
+            path.addLine(to: CGPoint(x: 19, y: 12))
+            path.addLine(to: CGPoint(x: 19, y: 5))
+            path.addLine(to: CGPoint(x: 7, y: 5))
+            path.addLine(to: CGPoint(x: 3, y: 10))
+            path.addLine(to: CGPoint(x: 3, y: 16))
+            path.addLine(to: CGPoint(x: 7, y: 16))
+            path.closeSubpath()
+
+            ctx.addPath(path)
+            ctx.setFillColor(NSColor.white.cgColor)
+            ctx.fillPath()
+            ctx.restoreGState()
+
+            ctx.addPath(path)
+            ctx.setStrokeColor(NSColor.black.cgColor)
+            ctx.setLineWidth(1.3)
+            ctx.setLineJoin(.round)
+            ctx.strokePath()
+            return true
+        }
+        return img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+    }
 }
 
 // MARK: - Key-Handling Window
@@ -167,7 +371,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
         setupWindow()
-        client = DisplayClient(layer: videoView.displayLayer)
+        client = DisplayClient(layer: videoView.displayLayer, videoView: videoView)
         client.start()
     }
 
@@ -241,6 +445,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 // MARK: - Network Client
 class DisplayClient {
     private let layer: AVSampleBufferDisplayLayer
+    private weak var videoView: VideoContainerView?
     private var browser: NWBrowser?
     private var framed: FramedConnection?
     private var formatDesc: CMVideoFormatDescription?
@@ -252,8 +457,9 @@ class DisplayClient {
 
     private var isConnected = false
 
-    init(layer: AVSampleBufferDisplayLayer) {
+    init(layer: AVSampleBufferDisplayLayer, videoView: VideoContainerView? = nil) {
         self.layer = layer
+        self.videoView = videoView
     }
 
     func start() {
@@ -359,10 +565,15 @@ class DisplayClient {
             guard let cfg = DisplayConfig(data: payload) else { return }
             print("Config: \(cfg.width)×\(cfg.height) @\(cfg.fps)fps")
             fflush(stdout)
+            videoView?.updateDimensions(width: Int(cfg.width), height: Int(cfg.height))
         case MSG_FORMAT:
             handleFormat(payload)
         case MSG_VIDEO:
             handleVideo(payload)
+        case MSG_CURSOR:
+            if let cursor = CursorMessage(data: payload) {
+                videoView?.updateCursor(cursor)
+            }
         default:
             break
         }

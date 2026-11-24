@@ -5,6 +5,7 @@ import Network
 public let MSG_CONFIG: UInt8 = 0x01
 public let MSG_VIDEO:  UInt8 = 0x02
 public let MSG_FORMAT: UInt8 = 0x03
+public let MSG_CURSOR: UInt8 = 0x04
 public let MSG_PING:   UInt8 = 0xFF
 
 // MARK: - Bonjour Service
@@ -50,6 +51,43 @@ public struct DisplayConfig {
         width  = data.withUnsafeBytes { UInt32(littleEndian: $0.load(fromByteOffset: 0, as: UInt32.self)) }
         height = data.withUnsafeBytes { UInt32(littleEndian: $0.load(fromByteOffset: 4, as: UInt32.self)) }
         fps    = data.withUnsafeBytes { UInt32(littleEndian: $0.load(fromByteOffset: 8, as: UInt32.self)) }
+    }
+}
+
+// MARK: - Cursor Payload
+/// Hardware cursor message: normalized coordinates [0.0 ... 1.0] relative to active display
+public struct CursorMessage {
+    public let visible: Bool
+    public let x: Float           // Normalized coordinate: 0.0 ... 1.0
+    public let y: Float           // Normalized coordinate: 0.0 ... 1.0
+    public let cursorType: UInt8  // 0: arrow, 1: iBeam, 2: pointingHand
+
+    public init(visible: Bool, x: Float, y: Float, cursorType: UInt8 = 0) {
+        self.visible = visible
+        self.x = x
+        self.y = y
+        self.cursorType = cursorType
+    }
+
+    public var data: Data {
+        var d = Data(count: 10)
+        d.withUnsafeMutableBytes { ptr in
+            ptr.storeBytes(of: visible ? UInt8(1) : UInt8(0), toByteOffset: 0, as: UInt8.self)
+            ptr.storeBytes(of: x.bitPattern.littleEndian, toByteOffset: 1, as: UInt32.self)
+            ptr.storeBytes(of: y.bitPattern.littleEndian, toByteOffset: 5, as: UInt32.self)
+            ptr.storeBytes(of: cursorType, toByteOffset: 9, as: UInt8.self)
+        }
+        return d
+    }
+
+    public init?(data: Data) {
+        guard data.count >= 10 else { return nil }
+        visible = (data[0] != 0)
+        let xBits = data.withUnsafeBytes { UInt32(littleEndian: $0.load(fromByteOffset: 1, as: UInt32.self)) }
+        let yBits = data.withUnsafeBytes { UInt32(littleEndian: $0.load(fromByteOffset: 5, as: UInt32.self)) }
+        x = Float(bitPattern: xBits)
+        y = Float(bitPattern: yBits)
+        cursorType = data[9]
     }
 }
 

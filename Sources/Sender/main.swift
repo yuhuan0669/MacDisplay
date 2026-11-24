@@ -307,6 +307,7 @@ func startServer() {
         clients.append(fc)
         clientsLock.unlock()
         needKeyframe = true
+        CursorTracker.shared.resendCurrentState(to: fc)
         appDelegate.updateUI()
     }
     listener.stateUpdateHandler = { state in
@@ -403,7 +404,7 @@ func startCapture() {
 
     let props: [AnyHashable: Any] = [
         "kCGDisplayStreamMinimumFrameTime": NSNumber(value: 1.0 / 60.0),
-        "kCGDisplayStreamShowCursor": kCFBooleanTrue as Any
+        "kCGDisplayStreamShowCursor": kCFBooleanFalse as Any
     ]
     displayStream = CGDisplayStream(
         dispatchQueueDisplay: targetDisplayID,
@@ -424,13 +425,132 @@ func startCapture() {
         print("CGDisplayStream start failed for display \(targetDisplayID)")
         return
     }
-    print("Capture started with cursor embedded on Display \(targetDisplayID)")
+    CursorTracker.shared.setTargetDisplay(id: targetDisplayID)
+    CursorTracker.shared.start()
+    print("Capture started with independent hardware cursor on Display \(targetDisplayID)")
 }
 
 func stopCapture() {
+    CursorTracker.shared.stop()
     displayStream?.stop()
     displayStream = nil
     print("Capture stopped")
+}
+
+// MARK: - Hardware Cursor Tracker
+final class CursorTracker {
+    static let shared = CursorTracker()
+    private var targetDisplayID: CGDirectDisplayID = CGMainDisplayID()
+    private var timer: DispatchSourceTimer?
+    private let queue = DispatchQueue(label: "com.macdisplay.cursor.tracker", qos: .userInteractive)
+    private var lastNormX: Float = -1
+    private var lastNormY: Float = -1
+    private var lastVisible: Bool = false
+    private var lastCursorType: UInt8 = 0
+    private var isRunning = false
+    private let lock = NSLock()
+
+    func setTargetDisplay(id: CGDirectDisplayID) {
+        lock.lock()
+        targetDisplayID = id
+        lastNormX = -1
+        lastNormY = -1
+        lastVisible = false
+        lock.unlock()
+    }
+
+    func start() {
+        guard !isRunning else { return }
+        isRunning = true
+
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        // 120Hz polling (~8.3ms): low motion-to-photon latency, negligible CPU
+        t.schedule(deadline: .now(), repeating: .milliseconds(8))
+        t.setEventHandler { [weak self] in
+            self?.poll()
+        }
+        t.resume()
+        timer = t
+        print("[CursorTracker] Started at 120Hz")
+    }
+
+    func stop() {
+        isRunning = false
+        timer?.cancel()
+        timer = nil
+        print("[CursorTracker] Stopped")
+    }
+
+    func resendCurrentState(to client: FramedConnection) {
+        lock.lock()
+        let msg = CursorMessage(
+            visible: lastVisible,
+            x: lastNormX >= 0 ? lastNormX : 0,
+            y: lastNormY >= 0 ? lastNormY : 0,
+            cursorType: lastCursorType
+        )
+        lock.unlock()
+        client.send(type: MSG_CURSOR, payload: msg.data)
+    }
+
+    private func poll() {
+        guard let mouseLoc = CGEvent(source: nil)?.location else { return }
+
+        lock.lock()
+        let displayID = targetDisplayID
+        lock.unlock()
+
+        let bounds = CGDisplayBounds(displayID)
+        guard bounds.width > 0 && bounds.height > 0 else { return }
+
+        let isInside = bounds.contains(mouseLoc)
+
+        if isInside {
+            let relX = mouseLoc.x - bounds.origin.x
+            let relY = mouseLoc.y - bounds.origin.y
+            let normX = Float(max(0.0, min(1.0, relX / bounds.width)))
+            let normY = Float(max(0.0, min(1.0, relY / bounds.height)))
+
+            var cType: UInt8 = 0
+            let curr = NSCursor.current
+            if curr == NSCursor.iBeam { cType = 1 }
+            else if curr == NSCursor.pointingHand { cType = 2 }
+
+            // Sub-pixel threshold (~0.5 pixel on 2560w screen) prevents idle jitter
+            if !lastVisible ||
+               abs(normX - lastNormX) > 0.0002 ||
+               abs(normY - lastNormY) > 0.0002 ||
+               cType != lastCursorType {
+
+                lastNormX = normX
+                lastNormY = normY
+                lastVisible = true
+                lastCursorType = cType
+
+                let msg = CursorMessage(visible: true, x: normX, y: normY, cursorType: cType)
+                broadcast(cursor: msg)
+            }
+        } else {
+            if lastVisible {
+                lastVisible = false
+                lastNormX = -1
+                lastNormY = -1
+                let msg = CursorMessage(visible: false, x: 0, y: 0, cursorType: 0)
+                broadcast(cursor: msg)
+            }
+        }
+    }
+
+    private func broadcast(cursor: CursorMessage) {
+        let payload = cursor.data
+        clientsLock.lock()
+        let conns = clients
+        clientsLock.unlock()
+
+        for c in conns {
+            c.send(type: MSG_CURSOR, payload: payload)
+        }
+    }
 }
 
 // MARK: - Encoder Setup
@@ -481,8 +601,21 @@ func setupEncoder(width: Int, height: Int) {
 }
 
 // MARK: - Per-Frame Encode
+private var debugFrameCount: Int = 0
+private var debugLastSec: Double = 0
+
 func encodeFrame(surface: IOSurface) {
     guard let session = encoderSession else { return }
+
+    debugFrameCount += 1
+    let now = Date().timeIntervalSinceReferenceDate
+    if now - debugLastSec >= 1.0 {
+        let fps = Double(debugFrameCount) / (now - debugLastSec)
+        print("[Sender FPS] Capturing & encoding at \(String(format: "%.1f", fps)) FPS")
+        fflush(stdout)
+        debugFrameCount = 0
+        debugLastSec = now
+    }
 
     var unmanagedPB: Unmanaged<CVPixelBuffer>?
     let attrs = [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
