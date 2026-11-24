@@ -65,7 +65,7 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
         cv.autoresizingMask = [.width, .height]
 
         // Status badge
-        statusLabel = NSTextField(labelWithString: "● 正在投屏 (35 Mbps / 30fps)")
+        statusLabel = NSTextField(labelWithString: "● 正在投屏 (45 Mbps / 30fps)")
         statusLabel.textColor = .systemGreen
         statusLabel.font = .systemFont(ofSize: 15, weight: .bold)
         statusLabel.frame = NSRect(x: 20, y: 155, width: 320, height: 24)
@@ -156,7 +156,7 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             clientsLock.unlock()
 
             if self.isStreaming {
-                self.statusLabel.stringValue = "● 正在投屏 (35 Mbps / 30fps)"
+                self.statusLabel.stringValue = "● 正在投屏 (45 Mbps / 30fps)"
                 self.statusLabel.textColor = .systemGreen
                 self.toggleButton.title = "暂停投屏"
                 if let item = self.statusItem.menu?.item(withTag: 100) {
@@ -309,7 +309,7 @@ func stopCapture() {
 // MARK: - Encoder Setup
 func setupEncoder(width: Int, height: Int) {
     var session: VTCompressionSession?
-    let bitrate = 35_000_000
+    let bitrate = 45_000_000
 
     let cb: VTCompressionOutputCallback = { _, _, status, _, sampleBuffer in
         guard status == noErr, let sb = sampleBuffer else { return }
@@ -334,14 +334,14 @@ func setupEncoder(width: Int, height: Int) {
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel,         value: kVTProfileLevel_H264_High_AutoLevel)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_H264EntropyMode,     value: kVTH264EntropyMode_CABAC)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate,       value: bitrate as CFNumber)
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_Quality,              value: 0.85 as CFNumber)
-    VTSessionSetProperty(s, key: "MaxAllowedFrameQP" as CFString,                value: NSNumber(value: 30))
-    VTSessionSetProperty(s, key: "MinAllowedFrameQP" as CFString,                value: NSNumber(value: 12))
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_Quality,              value: 0.95 as CFNumber)
+    VTSessionSetProperty(s, key: "MaxAllowedFrameQP" as CFString,                value: NSNumber(value: 24))
+    VTSessionSetProperty(s, key: "MinAllowedFrameQP" as CFString,                value: NSNumber(value: 10))
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate,    value: NSNumber(value: 30))
-    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 300))
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 60))
     VTCompressionSessionPrepareToEncodeFrames(s)
     encoderSession = s
-    print("Encoder ready (\(bitrate / 1_000_000) Mbps, ZeroDelay, CABAC, KeyInterval: 300 frames)")
+    print("Encoder ready (\(bitrate / 1_000_000) Mbps, ZeroDelay, CABAC, MaxQP: 24, KeyInterval: 60 frames)")
 }
 
 // MARK: - Per-Frame Encode
