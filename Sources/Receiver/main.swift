@@ -492,19 +492,21 @@ class DisplayClient {
         // Frame Pacing Scheduler: maps incoming network frames onto clean 60 FPS VSYNC slots without frame eviction
         let hostClock = CMClockGetHostTimeClock()
         let currentHostTime = CMClockGetTime(hostClock)
+        let vsyncLead = CMTime(value: 1, timescale: 60) // 16.6ms lead ensures frame is decoded and ready right at monitor V-blank
+        let targetNow = CMTimeAdd(currentHostTime, vsyncLead)
 
         var pts: CMTime
-        if nextPTS == .invalid || CMTimeCompare(nextPTS, currentHostTime) < 0 {
-            // First frame or resumed from idle: anchor to current host clock
-            pts = currentHostTime
-            nextPTS = CMTimeAdd(currentHostTime, frameDuration)
+        if nextPTS == .invalid || CMTimeCompare(nextPTS, targetNow) < 0 {
+            // First frame or resumed from idle: anchor to next VSYNC slot
+            pts = targetNow
+            nextPTS = CMTimeAdd(targetNow, frameDuration)
         } else {
             // Burst frame pacing: schedule at clean 16.6ms intervals
             let maxLead = CMTime(value: 3, timescale: 60) // 50ms (3 frames) max jitter lead
-            if CMTimeCompare(nextPTS, CMTimeAdd(currentHostTime, maxLead)) > 0 {
+            if CMTimeCompare(nextPTS, CMTimeAdd(targetNow, maxLead)) > 0 {
                 // If queue drifted too far ahead, resync to avoid lag build-up
-                pts = currentHostTime
-                nextPTS = CMTimeAdd(currentHostTime, frameDuration)
+                pts = targetNow
+                nextPTS = CMTimeAdd(targetNow, frameDuration)
             } else {
                 pts = nextPTS
                 nextPTS = CMTimeAdd(nextPTS, frameDuration)
