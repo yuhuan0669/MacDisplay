@@ -376,15 +376,19 @@ class DisplayClient {
         guard payload.count > 8 else { return }
 
         let start = payload.startIndex
-        let b0 = UInt64(payload[start])
-        let b1 = UInt64(payload[start + 1])
-        let b2 = UInt64(payload[start + 2])
-        let b3 = UInt64(payload[start + 3])
-        let b4 = UInt64(payload[start + 4])
-        let b5 = UInt64(payload[start + 5])
-        let b6 = UInt64(payload[start + 6])
-        let b7 = UInt64(payload[start + 7])
-        let sentTimeMs = Int64(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24) | (b4 << 32) | (b5 << 40) | (b6 << 48) | (b7 << 56))
+        let b0 = UInt32(payload[start])
+        let b1 = UInt32(payload[start + 1])
+        let b2 = UInt32(payload[start + 2])
+        let b3 = UInt32(payload[start + 3])
+        let low = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+
+        let b4 = UInt32(payload[start + 4])
+        let b5 = UInt32(payload[start + 5])
+        let b6 = UInt32(payload[start + 6])
+        let b7 = UInt32(payload[start + 7])
+        let high = b4 | (b5 << 8) | (b6 << 16) | (b7 << 24)
+
+        let sentTimeMs = Int64(UInt64(low) | (UInt64(high) << 32))
 
         let nowMs = Int64(Date().timeIntervalSince1970 * 1000)
         let rawDelta = nowMs - sentTimeMs
