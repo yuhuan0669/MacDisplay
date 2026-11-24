@@ -319,19 +319,32 @@ func startServer() {
 
 func setMode(_ mode: DisplayMode) {
     guard mode != currentDisplayMode else { return }
-    print("Switching display mode to: \(mode.rawValue)")
+    print("Switching display mode from \(currentDisplayMode.rawValue) to: \(mode.rawValue)")
     stopCapture()
-
-    if mode == .mirror {
-        VirtualDisplayManager.shared().destroyVirtualDisplay()
-    }
 
     currentDisplayMode = mode
 
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-        startCapture()
-        needKeyframe = true
-        appDelegate.updateUI()
+    if mode == .extended {
+        let ok = VirtualDisplayManager.shared().createVirtualDisplay(
+            withWidth: 2560,
+            height: 1440,
+            hiDPI: false,
+            name: "iMac 5K 扩展显示器"
+        )
+        print("createVirtualDisplay returned: \(ok)")
+        // Give WindowServer 0.4s to stabilize before starting capture
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            startCapture()
+            needKeyframe = true
+            appDelegate.updateUI()
+        }
+    } else {
+        VirtualDisplayManager.shared().destroyVirtualDisplay()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            startCapture()
+            needKeyframe = true
+            appDelegate.updateUI()
+        }
     }
 }
 
@@ -351,28 +364,25 @@ func startCapture() {
     if currentDisplayMode == .extended {
         let vdm = VirtualDisplayManager.shared()
         if !vdm.isRunning {
-            // 2560x1440 16:9 matches iMac 5K aspect ratio perfectly with zero black bars
-            let ok = vdm.createVirtualDisplay(withWidth: 2560, height: 1440, hiDPI: false, name: "iMac 5K 扩展显示器")
-            if ok {
-                targetDisplayID = vdm.displayID
-                print("Created Virtual Display with ID: \(targetDisplayID)")
-            } else {
-                print("Failed to create Virtual Display, falling back to Main Display")
-                currentDisplayMode = .mirror
-                targetDisplayID = CGMainDisplayID()
-            }
+            _ = vdm.createVirtualDisplay(withWidth: 2560, height: 1440, hiDPI: false, name: "iMac 5K 扩展显示器")
+        }
+        targetDisplayID = vdm.displayID
+        capturedWidth = vdm.activeWidth > 0 ? Int(vdm.activeWidth) : 2560
+        capturedHeight = vdm.activeHeight > 0 ? Int(vdm.activeHeight) : 1440
+    } else {
+        targetDisplayID = CGMainDisplayID()
+        if let mode = CGDisplayCopyDisplayMode(targetDisplayID) {
+            capturedWidth  = mode.pixelWidth
+            capturedHeight = mode.pixelHeight
         } else {
-            targetDisplayID = vdm.displayID
+            capturedWidth  = CGDisplayPixelsWide(targetDisplayID) * 2
+            capturedHeight = CGDisplayPixelsHigh(targetDisplayID) * 2
         }
     }
 
-    if let mode = CGDisplayCopyDisplayMode(targetDisplayID) {
-        capturedWidth  = mode.pixelWidth
-        capturedHeight = mode.pixelHeight
-    } else {
-        capturedWidth  = CGDisplayPixelsWide(targetDisplayID)
-        capturedHeight = CGDisplayPixelsHigh(targetDisplayID)
-    }
+    // Safety fallback: ensure width and height are never 0
+    if capturedWidth <= 0 { capturedWidth = 2560 }
+    if capturedHeight <= 0 { capturedHeight = 1440 }
     capturedWidth  -= (capturedWidth % 2)
     capturedHeight -= (capturedHeight % 2)
     print("Capturing Display \(targetDisplayID): \(capturedWidth)×\(capturedHeight) (Mode: \(currentDisplayMode.rawValue))")
@@ -407,14 +417,11 @@ func startCapture() {
         encodeFrame(surface: surface)
     }
     guard let ds = displayStream else {
-        print("CGDisplayStream creation returned nil")
-        DispatchQueue.main.async {
-            appDelegate.showPermissionRequiredUI()
-        }
+        print("CGDisplayStream creation returned nil for display \(targetDisplayID)")
         return
     }
     guard ds.start() == .success else {
-        print("CGDisplayStream start failed")
+        print("CGDisplayStream start failed for display \(targetDisplayID)")
         return
     }
     print("Capture started with cursor embedded on Display \(targetDisplayID)")
@@ -428,6 +435,11 @@ func stopCapture() {
 
 // MARK: - Encoder Setup
 func setupEncoder(width: Int, height: Int) {
+    guard width > 0 && height > 0 else {
+        print("Invalid encoder dimensions: \(width)x\(height)")
+        return
+    }
+
     var session: VTCompressionSession?
     let bitrate = 20_000_000 // 20 Mbps HEVC: sweet spot for low latency, low Wi-Fi pressure, and crisp Retina text
 
@@ -450,7 +462,10 @@ func setupEncoder(width: Int, height: Int) {
         refcon: nil,
         compressionSessionOut: &session
     )
-    guard err == noErr, let s = session else { fatalError("HEVC Encoder create failed: \(err)") }
+    guard err == noErr, let s = session else {
+        print("HEVC Encoder create failed: \(err)")
+        return
+    }
 
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime,             value: kCFBooleanTrue)
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
@@ -462,7 +477,7 @@ func setupEncoder(width: Int, height: Int) {
     VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,  value: NSNumber(value: 30))
     VTCompressionSessionPrepareToEncodeFrames(s)
     encoderSession = s
-    print("HEVC Hardware Encoder ready (\(bitrate / 1_000_000) Mbps, ZeroDelay, KeyInterval: 30 frames)")
+    print("HEVC Hardware Encoder ready (\(width)x\(height), \(bitrate / 1_000_000) Mbps, ZeroDelay, KeyInterval: 30 frames)")
 }
 
 // MARK: - Per-Frame Encode
