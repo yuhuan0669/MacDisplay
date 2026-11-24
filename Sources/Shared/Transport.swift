@@ -112,13 +112,9 @@ public final class FramedConnection {
         msg.append(type)
         msg.append(payload)
 
-        if let onComplete = completion {
-            connection.send(content: msg, completion: .contentProcessed { error in
-                onComplete(error)
-            })
-        } else {
-            connection.send(content: msg, completion: .idempotent)
-        }
+        connection.send(content: msg, completion: .contentProcessed { error in
+            completion?(error)
+        })
     }
 
     public func startReceiving(handler: @escaping (UInt8, Data) -> Void) {
