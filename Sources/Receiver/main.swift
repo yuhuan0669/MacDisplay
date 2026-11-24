@@ -31,18 +31,7 @@ class VideoContainerView: NSView {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
         displayLayer.preventsDisplaySleepDuringVideoPlayback = true
-
-        var timebase: CMTimebase?
-        CMTimebaseCreateWithSourceClock(
-            allocator: kCFAllocatorDefault,
-            sourceClock: CMClockGetHostTimeClock(),
-            timebaseOut: &timebase
-        )
-        if let tb = timebase {
-            displayLayer.controlTimebase = tb
-            CMTimebaseSetTime(tb, time: CMClockGetTime(CMClockGetHostTimeClock()))
-            CMTimebaseSetRate(tb, rate: 1.0)
-        }
+        // Keep controlTimebase nil: AVSampleBufferDisplayLayer displays frames in decode order synchronized to native VSYNC without timebase clock drift or dropped frames
 
         layer?.addSublayer(displayLayer)
 
@@ -249,9 +238,6 @@ class DisplayClient {
     private var minLatencyMs: Int64 = Int64.max
     private var lastLatencyResetTime: Double = 0
     private var lastLogTime: Double = 0
-    private var nextPTS: CMTime = .invalid
-    private let frameDuration = CMTime(value: 1, timescale: 60)
-
     private var isConnected = false
 
     init(layer: AVSampleBufferDisplayLayer) {
@@ -347,7 +333,6 @@ class DisplayClient {
         framed = nil
         formatDesc = nil
         lastFormatPayload = nil
-        nextPTS = .invalid
         DispatchQueue.main.async { [weak self] in
             self?.layer.flush()
         }
@@ -489,33 +474,9 @@ class DisplayClient {
             return
         }
 
-        // Frame Pacing Scheduler: maps incoming network frames onto clean 60 FPS VSYNC slots without frame eviction
-        let hostClock = CMClockGetHostTimeClock()
-        let currentHostTime = CMClockGetTime(hostClock)
-        let vsyncLead = CMTime(value: 1, timescale: 60) // 16.6ms lead ensures frame is decoded and ready right at monitor V-blank
-        let targetNow = CMTimeAdd(currentHostTime, vsyncLead)
-
-        var pts: CMTime
-        if nextPTS == .invalid || CMTimeCompare(nextPTS, targetNow) < 0 {
-            // First frame or resumed from idle: anchor to next VSYNC slot
-            pts = targetNow
-            nextPTS = CMTimeAdd(targetNow, frameDuration)
-        } else {
-            // Burst frame pacing: schedule at clean 16.6ms intervals
-            let maxLead = CMTime(value: 3, timescale: 60) // 50ms (3 frames) max jitter lead
-            if CMTimeCompare(nextPTS, CMTimeAdd(targetNow, maxLead)) > 0 {
-                // If queue drifted too far ahead, resync to avoid lag build-up
-                pts = targetNow
-                nextPTS = CMTimeAdd(targetNow, frameDuration)
-            } else {
-                pts = nextPTS
-                nextPTS = CMTimeAdd(nextPTS, frameDuration)
-            }
-        }
-
         var timingInfo = CMSampleTimingInfo(
-            duration: frameDuration,
-            presentationTimeStamp: pts,
+            duration: .invalid,
+            presentationTimeStamp: .invalid,
             decodeTimeStamp: .invalid
         )
 
