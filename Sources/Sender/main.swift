@@ -214,7 +214,7 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             clientsLock.unlock()
 
             if self.isStreaming {
-                self.statusLabel.stringValue = "● 正在投屏 (HEVC 黄金平衡 / 20Mbps)"
+                self.statusLabel.stringValue = "● 正在投屏 (HEVC 视网膜清晰 / 26Mbps)"
                 self.statusLabel.textColor = .systemGreen
                 self.toggleButton.title = "暂停投屏"
                 if let item = self.statusItem.menu?.item(withTag: 100) {
@@ -238,10 +238,10 @@ class SenderAppDelegate: NSObject, NSApplicationDelegate {
             }
 
             if currentDisplayMode == .extended {
-                self.infoLabel.stringValue = "模式: 🖥️ 扩展屏 (16:9 铺满 iMac, 零黑边)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 60fps (HEVC 20Mbps)"
+                self.infoLabel.stringValue = "模式: 🖥️ 扩展屏 (16:9 铺满 iMac, 零黑边)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 60fps (HEVC 26Mbps)"
                 self.modeSegment.selectedSegment = 0
             } else {
-                self.infoLabel.stringValue = "模式: 🪞 镜像屏 (克隆 MacBook 桌面)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 60fps (HEVC 20Mbps)"
+                self.infoLabel.stringValue = "模式: 🪞 镜像屏 (克隆 MacBook 桌面)\n分辨率: \(capturedWidth)×\(capturedHeight) @ 60fps (HEVC 26Mbps)"
                 self.modeSegment.selectedSegment = 1
             }
 
@@ -402,7 +402,7 @@ func startCapture() {
     snapshot.forEach { $0.send(type: MSG_CONFIG, payload: cfg.data) }
 
     let props: [AnyHashable: Any] = [
-        "kCGDisplayStreamMinimumFrameTime": NSNumber(value: 1.0 / 60.0),
+        "kCGDisplayStreamMinimumFrameTime": NSNumber(value: 0.0), // 0.0: pass every frame instantly without artificial timing suppression
         "kCGDisplayStreamShowCursor": kCFBooleanTrue as Any,
         "kCGDisplayStreamQueueDepth": NSNumber(value: 1) // Critical: 1 frame queue depth eliminates 33-50ms buffering!
     ]
@@ -442,7 +442,7 @@ func setupEncoder(width: Int, height: Int) {
     }
 
     var session: VTCompressionSession?
-    let bitrate = 20_000_000 // 20 Mbps HEVC: sweet spot for low latency, low Wi-Fi pressure, and crisp Retina text
+    let bitrate = 26_000_000 // 26 Mbps HEVC: crystal-clear text & ultra-low latency for 2560x1440 on LAN
 
     let cb: VTCompressionOutputCallback = { _, _, status, _, sampleBuffer in
         guard status == noErr, let sb = sampleBuffer else { return }
