@@ -281,27 +281,35 @@ func startServer() {
     listener.service = NWListener.Service(type: kServiceType)
     listener.newConnectionHandler = { conn in
         print("Client connected: \(conn.endpoint)")
+        fflush(stdout)
         let fc = FramedConnection(conn)
         conn.stateUpdateHandler = { state in
             switch state {
+            case .ready:
+                print("Client connection ready: \(conn.endpoint)")
+                fflush(stdout)
+                let cfg = DisplayConfig(width: UInt32(capturedWidth),
+                                        height: UInt32(capturedHeight), fps: 60)
+                fc.send(type: MSG_CONFIG, payload: cfg.data)
+
+                clientsLock.lock()
+                let fmt = lastFormatData
+                clientsLock.unlock()
+                if let f = fmt {
+                    fc.send(type: MSG_FORMAT, payload: f)
+                }
+                needKeyframe = true
             case .cancelled, .failed:
                 clientsLock.lock()
                 clients.removeAll { $0 === fc }
                 clientsLock.unlock()
                 print("Client disconnected: \(state)")
+                fflush(stdout)
                 appDelegate.updateUI()
             default: break
             }
         }
         conn.start(queue: .global())
-
-        let cfg = DisplayConfig(width: UInt32(capturedWidth),
-                                height: UInt32(capturedHeight), fps: 60)
-        fc.send(type: MSG_CONFIG, payload: cfg.data)
-
-        if let fmt = lastFormatData {
-            fc.send(type: MSG_FORMAT, payload: fmt)
-        }
 
         clientsLock.lock()
         clients.append(fc)
@@ -523,9 +531,10 @@ func broadcastFrame(sampleBuffer: CMSampleBuffer) {
     let totalLen = CMBlockBufferGetDataLength(blockBuf)
     guard totalLen > 0 else { return }
 
-    if let fmt = CMSampleBufferGetFormatDescription(sampleBuffer),
-       let psData = extractParameterSets(fmt),
-       lastFormatData != psData {
+    let keyframe = isKeyframe(sampleBuffer)
+    if (keyframe || lastFormatData == nil),
+       let fmt = CMSampleBufferGetFormatDescription(sampleBuffer),
+       let psData = extractParameterSets(fmt) {
         lastFormatData = psData
         clientsLock.lock()
         let snapshot = clients
