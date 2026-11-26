@@ -488,19 +488,23 @@ class DisplayClient {
             return
         }
 
-        // Ultra-responsive VSYNC presentation pipeline:
-        // Schedule each frame 20ms in advance of host time.
-        // iMac hardware HEVC decoder takes ~3ms, leaving 17ms margin before monitor VBLANK.
-        // This ensures FigVideoQueue presents each frame at the immediate next 60Hz display refresh cycle,
-        // with ZERO late drops, ZERO evicted frames, and ZERO discarded frames!
+        // 60Hz-aligned PTS stepping engine:
+        // - For the first frame or after an idle gap: anchor PTS to hostNow + 20ms (floor).
+        // - For consecutive burst frames arriving faster than 16.6ms: step exactly one 60Hz VSYNC
+        //   slot (1/60s = 16.666ms) forward from the last PTS, scheduling them into future VSYNC slots.
+        // This eliminates duplicate/clustered PTS values that caused FigVideoQueue to drop ~78% of frames.
         let hostClock = CMClockGetHostTimeClock()
-        let currentHostTime = CMClockGetTime(hostClock)
-        let vsyncLead = CMTime(value: 20, timescale: 1000) // 20ms safety margin
-        var pts = CMTimeAdd(currentHostTime, vsyncLead)
+        let hostNow = CMClockGetTime(hostClock)
+        let floor = CMTimeAdd(hostNow, CMTime(value: 20, timescale: 1000)) // 20ms minimum lead
 
-        if lastPTS != .invalid && CMTimeCompare(pts, lastPTS) <= 0 {
-            // Micro-burst protection: ensure strictly monotonic PTS
-            pts = CMTimeAdd(lastPTS, CMTime(value: 1, timescale: 1000))
+        var pts: CMTime
+        let nextStep = lastPTS == .invalid ? floor : CMTimeAdd(lastPTS, frameDuration)
+        if lastPTS == .invalid || CMTimeCompare(nextStep, floor) < 0 {
+            // First frame or resumed after idle gap: anchor to floor
+            pts = floor
+        } else {
+            // Consecutive burst frame: step exactly one 60Hz VSYNC slot forward (never drop)
+            pts = nextStep
         }
         lastPTS = pts
 
